@@ -7,7 +7,6 @@
   </picture>
 </p>
 
-[English](README.md)
 
 EdgeGist 是一个运行在 Cloudflare edge network 上的 GitHub Gist API 兼容服务，使用 D1 存储，并部署到带 static assets 的 Cloudflare Workers。
 
