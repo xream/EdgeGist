@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "edge-gist",
+  "compatibility_date": "2026-05-08",
+  "main": "./dist/_worker.js",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    "EDGEGIST_OWNER_USERNAME": "GuoDong",
+    "EDGEGIST_OWNER_PASSWORD": "Mgd19960512",
+    "EDGEGIST_OWNER_TOKEN": "Mgd19960512",
+    "EDGEGIST_BASE_URL": "https://edge-gist.your-subdomain.workers.dev",
+    "EDGEGIST_HISTORY_MAX_VERSIONS": "100",
+    "EDGEGIST_TURNSTILE_SITE_KEY": "",
+    "EDGEGIST_TURNSTILE_SECRET_KEY": ""
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "edge-gist",
+      "database_id": "replace-with-cloudflare-d1-database-id"
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "edge-gist.0037.us",
+      "custom_domain": true
+    }
+  ]
+}
