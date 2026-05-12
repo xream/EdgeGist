@@ -826,6 +826,40 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type=
   transform: translateY(0);
 }
 
+.action-tooltip-trigger {
+  position: relative;
+  display: inline-flex;
+  cursor: not-allowed;
+  outline: none;
+}
+
+.action-tooltip-trigger:focus-visible {
+  border-radius: 0.375rem;
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.action-tooltip-floating {
+  position: fixed;
+  z-index: 100;
+  width: max-content;
+  max-width: min(20rem, calc(100vw - 2rem));
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--card);
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.24),
+    0 4px 6px -4px rgb(0 0 0 / 0.24);
+  color: var(--card-foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.2;
+  pointer-events: none;
+  text-align: left;
+  white-space: normal;
+}
+
 .token-secret-input:not(:placeholder-shown) {
   -webkit-text-security: disc;
 }

@@ -1,4 +1,16 @@
-import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  lazy,
+  Suspense,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, ReactNode } from 'react'
 import type { FileContents as PierreDiffFileContents } from '@pierre/diffs/react'
 import { createFileTreeIconResolver, getBuiltInFileIconColor, getBuiltInSpriteSheet } from '@pierre/trees'
@@ -329,6 +341,7 @@ const englishTranslations = {
   delete: 'Delete',
   deleteFile: 'Delete file',
   deleteFileConfirm: 'Delete file {filename}?',
+  deleteLastFileBlocked: 'GitHub Gist does not allow deleting the last file. Updating a gist through the API with no remaining files also deletes the gist.',
   deleteGist: 'Delete gist',
   deleteGistConfirm: 'Delete gist {id}? This cannot be undone.',
   deleted: 'Deleted',
@@ -582,6 +595,7 @@ const translations: Record<Locale, Record<TranslationKey, string>> = {
     delete: '删除',
     deleteFile: '删除文件',
     deleteFileConfirm: '删除文件 {filename}？',
+    deleteLastFileBlocked: 'Gist 官方也不允许删除最后一个文件；使用 API 更新时如果文件全为空，也会删除 gist。',
     deleteGist: '删除 gist',
     deleteGistConfirm: '删除 gist {id}？此操作无法撤销。',
     deleted: '删除',
@@ -1837,7 +1851,7 @@ export function App() {
     event.preventDefault()
     if (!isAuthenticated || !gistEditorMode) return
 
-    const validationError = validateGistDraft(gistEditorDraft, gistEditorMode)
+    const validationError = validateGistDraft(gistEditorDraft)
     if (validationError) {
       setError(t(validationError))
       return
@@ -2106,7 +2120,7 @@ export function App() {
   }
 
   function requestDeleteSelectedFile() {
-    if (!isAuthenticated || !latestFile) return
+    if (!isAuthenticated || !detail || !latestFile) return
     setConfirmDialog({
       title: t('deleteFile'),
       description: t('deleteFileConfirm', { filename: latestFile.filename }),
@@ -2118,6 +2132,10 @@ export function App() {
 
   async function deleteSelectedFile() {
     if (!isAuthenticated || !detail || !latestFile) return
+    if (isLastRemainingGistFile(detail)) {
+      setError(t('deleteLastFileBlocked'))
+      return
+    }
 
     setFileSaving(true)
     setError(null)
@@ -3253,6 +3271,19 @@ function GistDetailPage({
     canCollapseSidePanels && (filesPanelCollapsedPreference ?? shouldAutoCollapseSidePanels)
   const activityPanelCollapsed =
     canCollapseSidePanels && (activityPanelCollapsedPreference ?? shouldAutoCollapseSidePanels)
+  const deletingLastFile = fileTreePaths.length <= 1
+  const deleteFileButton = (
+    <Button
+      variant="destructive"
+      size="icon"
+      onClick={onDeleteFile}
+      title={deletingLastFile ? undefined : t('delete')}
+      aria-label={t('delete')}
+      disabled={deletingLastFile}
+    >
+      <Trash2 className="h-4 w-4" />
+    </Button>
+  )
   const autoDiffShouldUseUnified =
     diffLayoutPreference === 'auto' &&
     mode === 'diff' &&
@@ -3442,15 +3473,11 @@ function GistDetailPage({
                     >
                       <Pencil className="h-4 w-4" />
                     </Button>
-                    <Button
-                      variant="destructive"
-                      size="icon"
-                      onClick={onDeleteFile}
-                      title={t('delete')}
-                      aria-label={t('delete')}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {deletingLastFile ? (
+                      <ActionTooltip label={t('deleteLastFileBlocked')}>
+                        {deleteFileButton}
+                      </ActionTooltip>
+                    ) : deleteFileButton}
                   </>
                 ) : null}
                 <Button
@@ -4630,6 +4657,73 @@ function ToastMessage({ message }: { message: string }) {
     <div className="fixed left-1/2 top-20 z-50 -translate-x-1/2 rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg">
       {message}
     </div>
+  )
+}
+
+function ActionTooltip({ children, label }: { children: ReactNode; label: string }) {
+  const tooltipId = useId()
+  const triggerRef = useRef<HTMLSpanElement | null>(null)
+  const tooltipRef = useRef<HTMLSpanElement | null>(null)
+  const [open, setOpen] = useState(false)
+  const [tooltipStyle, setTooltipStyle] = useState<CSSProperties | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) return
+
+    const updatePosition = () => {
+      const trigger = triggerRef.current
+      const tooltip = tooltipRef.current
+      if (!trigger || !tooltip) return
+
+      const padding = 8
+      const triggerRect = trigger.getBoundingClientRect()
+      const tooltipWidth = tooltip.offsetWidth
+      const tooltipHeight = tooltip.offsetHeight
+      const maxLeft = Math.max(padding, window.innerWidth - tooltipWidth - padding)
+      const idealLeft = triggerRect.left + (triggerRect.width / 2) - (tooltipWidth / 2)
+      const left = Math.min(Math.max(padding, idealLeft), maxLeft)
+      const belowTop = triggerRect.bottom + padding
+      const aboveTop = triggerRect.top - tooltipHeight - padding
+      const top = belowTop + tooltipHeight <= window.innerHeight - padding
+        ? belowTop
+        : Math.max(padding, aboveTop)
+
+      setTooltipStyle({ left, top })
+    }
+
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [open, label])
+
+  return (
+    <span
+      ref={triggerRef}
+      className="action-tooltip-trigger"
+      tabIndex={0}
+      aria-describedby={open ? tooltipId : undefined}
+      onBlur={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onPointerEnter={() => setOpen(true)}
+      onPointerLeave={() => setOpen(false)}
+    >
+      {children}
+      {open ? (
+        <span
+          ref={tooltipRef}
+          id={tooltipId}
+          role="tooltip"
+          className="action-tooltip-floating"
+          style={tooltipStyle ?? { left: 0, top: 0, visibility: 'hidden' }}
+        >
+          {label}
+        </span>
+      ) : null}
+    </span>
   )
 }
 
@@ -6284,9 +6378,9 @@ function createDraftId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}:${Math.random()}`
 }
 
-function validateGistDraft(draft: GistEditorDraft, mode: GistEditorMode): TranslationKey | null {
+function validateGistDraft(draft: GistEditorDraft): TranslationKey | null {
   const activeFiles = draft.files.filter((file) => !file.deleted)
-  if (mode === 'create' && activeFiles.length === 0) return 'gistFilesRequired'
+  if (activeFiles.length === 0) return 'gistFilesRequired'
   if (activeFiles.some((file) => file.filename.length === 0)) return 'gistFilesRequired'
   if (activeFiles.some((file) => filenameHasPathSeparator(file.filename))) return 'fileNameCannotContainSlash'
   if (activeFiles.some((file) => file.content.length === 0)) return 'fileContentRequired'
@@ -6295,6 +6389,10 @@ function validateGistDraft(draft: GistEditorDraft, mode: GistEditorMode): Transl
   if (new Set(names).size !== names.length) return 'fileNamesMustBeUnique'
 
   return null
+}
+
+function isLastRemainingGistFile(gist: GistDetail) {
+  return Object.keys(gist.files).length <= 1
 }
 
 function gistDraftToSaveInput(draft: GistEditorDraft, mode: GistEditorMode): SaveGistInput {
