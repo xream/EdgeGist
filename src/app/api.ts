@@ -3,6 +3,7 @@ import type {
   CloudflareSettings,
   CloudflareSettingsInput,
   CloudflareUsage,
+  ClearHistoryResult,
   EdgeGistExportPayload,
   GistDetail,
   GistSummary,
@@ -150,6 +151,10 @@ export class ApiClient {
       method: 'POST',
       body: JSON.stringify(payload),
     })
+  }
+
+  async clearHistory(): Promise<ClearHistoryResult> {
+    return this.request(`${this.adminApiBase()}/history`, { method: 'DELETE' })
   }
 
   private adminApiBase(): string {

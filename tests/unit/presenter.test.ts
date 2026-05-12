@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { presentGist } from '../../src/gists/presenter'
+import { presentGist, presentLiteGist } from '../../src/gists/presenter'
 import type { GistRecord } from '../../src/gists/types'
 import type { EdgeGistConfig } from '../../src/env'
 
@@ -47,6 +47,32 @@ describe('GitHub presenter', () => {
         raw_url: 'https://edgegist.test/owner%20name/gist1/raw/config.json',
       },
     })
+  })
+
+  test('renders lite gist fields needed by Sub-Store without history, owner, or file content', () => {
+    const payload = presentLiteGist(gist(), {
+      config,
+      apiPrefix: '/lite',
+      versions: [],
+    })
+
+    expect(payload.id).toBe('gist1')
+    expect(payload.url).toBe('https://edgegist.test/lite/gists/gist1')
+    expect(payload.html_url).toBe('https://edgegist.test/owner/gist1')
+    expect(payload.description).toBe('test')
+    expect(payload.owner).toBeUndefined()
+    expect(payload.history).toBeUndefined()
+    expect(payload.forks).toBeUndefined()
+    expect(payload.files).toMatchObject({
+      'config.json': {
+        filename: 'config.json',
+        raw_url: 'https://edgegist.test/owner/gist1/raw/config.json',
+        size: 16,
+      },
+    })
+    expect(
+      (payload.files as Record<string, Record<string, unknown>>)['config.json']?.content,
+    ).toBeUndefined()
   })
 })
 

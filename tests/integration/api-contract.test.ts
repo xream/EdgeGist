@@ -29,6 +29,73 @@ class QueryBudgetD1 implements D1DatabaseLike {
   }
 }
 
+class ContentReadGuardD1 implements D1DatabaseLike {
+  constructor(private readonly db: D1DatabaseLike) {}
+
+  prepare(query: string): D1PreparedStatement {
+    const normalizedQuery = query.replace(/\s+/g, ' ').trim()
+    if (
+      /SELECT (gist_version_files\.version_id, )?filename, content,/i.test(normalizedQuery) ||
+      /\bgist_files\.content\b/i.test(normalizedQuery)
+    ) {
+      throw new Error('D1 content column read exceeded lite response contract')
+    }
+    return this.db.prepare(query)
+  }
+
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    return this.db.batch(statements)
+  }
+}
+
+class VersionFileReadGuardD1 implements D1DatabaseLike {
+  constructor(private readonly db: D1DatabaseLike) {}
+
+  prepare(query: string): D1PreparedStatement {
+    if (/\bFROM\s+gist_version_files\b/i.test(query)) {
+      throw new Error('D1 version file metadata read exceeded lite commits contract')
+    }
+    return this.db.prepare(query)
+  }
+
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    return this.db.batch(statements)
+  }
+}
+
+class VersionChangeReadGuardD1 implements D1DatabaseLike {
+  constructor(private readonly db: D1DatabaseLike) {}
+
+  prepare(query: string): D1PreparedStatement {
+    if (/\bFROM\s+gist_version_changes\b/i.test(query)) {
+      throw new Error('D1 version change read exceeded lite version contract')
+    }
+    return this.db.prepare(query)
+  }
+
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    return this.db.batch(statements)
+  }
+}
+
+class CurrentFileContentReadCounterD1 implements D1DatabaseLike {
+  contentReads = 0
+
+  constructor(private readonly db: D1DatabaseLike) {}
+
+  prepare(query: string): D1PreparedStatement {
+    const normalizedQuery = query.replace(/\s+/g, ' ').trim()
+    if (/SELECT filename, content, type, language, size, truncated, created_at, updated_at FROM gist_files/i.test(normalizedQuery)) {
+      this.contentReads += 1
+    }
+    return this.db.prepare(query)
+  }
+
+  async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    return this.db.batch(statements)
+  }
+}
+
 class QueryBudgetStatement implements D1PreparedStatement {
   constructor(
     readonly inner: D1PreparedStatement,
@@ -82,7 +149,9 @@ describe('Gist API contract', () => {
     expect(created.id).toBeString()
     expect(created.html_url).toBe(`https://edgegist.test/owner/${created.id}`)
     expect(created.files['config.json'].content).toBe('{"enabled":true}')
-    expect(created.files['config.json'].raw_url).toBe(`https://edgegist.test/owner/${created.id}/raw/config.json`)
+    expect(created.files['config.json'].raw_url).toBe(
+      `https://edgegist.test/owner/${created.id}/raw/config.json`,
+    )
     expect(created.owner.login).toBe('owner')
     expect(created.comments).toBe(0)
 
@@ -714,6 +783,275 @@ describe('Gist API contract', () => {
     expect(updated.history).toHaveLength(6)
   })
 
+  test('serves a Sub-Store-compatible lite API without response history while preserving gist history', async () => {
+    const app = createApp()
+    const db = createMigratedTestD1()
+    const env = createTestEnv({ DB: db, EDGEGIST_HISTORY_MAX_VERSIONS: '5' })
+
+    const createResponse = await app.request(
+      '/lite/gists',
+      {
+        method: 'POST',
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          description: 'Sub-Store Sync',
+          public: false,
+          files: {
+            'config.json': { content: '{"enabled":true}' },
+          },
+        }),
+      },
+      env,
+    )
+
+    expect(createResponse.status).toBe(201)
+    const created = (await createResponse.json()) as Record<string, any>
+    expect(created.id).toBeString()
+    expect(created.url).toBe(`https://edgegist.test/lite/gists/${created.id}`)
+    expect(created.html_url).toBe(`https://edgegist.test/owner/${created.id}`)
+    expect(created.description).toBe('Sub-Store Sync')
+    expect(created.owner).toBeUndefined()
+    expect(created.history).toBeUndefined()
+    expect(created.forks).toBeUndefined()
+    expect(created.files['config.json'].raw_url).toBe(`https://edgegist.test/owner/${created.id}/raw/config.json`)
+    expect(created.files['config.json'].content).toBeUndefined()
+
+    const located = (await (await app.request(
+      '/lite/gists?per_page=100&page=1',
+      { headers: ownerHeaders() },
+      env,
+    )).json()) as Array<Record<string, any>>
+    expect(located.map((gist) => gist.description)).toContain('Sub-Store Sync')
+    expect(located.find((gist) => gist.id === created.id)?.url).toBe(
+      `https://edgegist.test/lite/gists/${created.id}`,
+    )
+    expect(located.find((gist) => gist.id === created.id)?.files['config.json'].raw_url).toBe(
+      `https://edgegist.test/owner/${created.id}/raw/config.json`,
+    )
+
+    const files = Object.fromEntries(
+      Array.from({ length: 55 }, (_, index) => [
+        `artifact-${index}.conf`,
+        { content: `content-${index}` },
+      ]),
+    )
+    const updateDb = new CurrentFileContentReadCounterD1(db)
+    const updateResponse = await app.request(
+      `/lite/gists/${created.id}`,
+      {
+        method: 'PATCH',
+        headers: ownerHeaders(),
+        body: JSON.stringify({ files }),
+      },
+      {
+        ...env,
+        DB: new QueryBudgetD1(updateDb, 30),
+      },
+    )
+
+    expect(updateResponse.status).toBe(200)
+    expect(updateDb.contentReads).toBe(1)
+    const updated = (await updateResponse.json()) as Record<string, any>
+    expect(updated.url).toBe(`https://edgegist.test/lite/gists/${created.id}`)
+    expect(Object.keys(updated.files)).toHaveLength(56)
+    expect(updated.files['artifact-54.conf'].raw_url).toBe(
+      `https://edgegist.test/owner/${created.id}/raw/artifact-54.conf`,
+    )
+    expect(updated.files['artifact-54.conf'].content).toBeUndefined()
+    expect(updated.owner).toBeUndefined()
+    expect(updated.history).toBeUndefined()
+    expect(updated.forks).toBeUndefined()
+
+    const locatedByFilename = (await (await app.request(
+      '/lite/gists?q=artifact-54.conf&per_page=100&page=1',
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as Array<Record<string, any>>
+    expect(locatedByFilename.map((gist) => gist.id)).toContain(created.id)
+
+    const notLocatedByContent = (await (await app.request(
+      '/lite/gists?q=content-54&per_page=100&page=1',
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as Array<Record<string, any>>
+    expect(notLocatedByContent.map((gist) => gist.id)).not.toContain(created.id)
+
+    const userLocatedByFilename = (await (await app.request(
+      '/lite/users/owner/gists?q=artifact-54.conf&per_page=100&page=1',
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as Array<Record<string, any>>
+    expect(userLocatedByFilename.map((gist) => gist.id)).toContain(created.id)
+
+    const rawResponse = await app.request(`/owner/${created.id}/raw/artifact-54.conf`, {}, env)
+    expect(rawResponse.status).toBe(200)
+    expect(await rawResponse.text()).toBe('content-54')
+
+    const liteDetail = (await (await app.request(
+      `/lite/gists/${created.id}`,
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as Record<string, any>
+    expect(liteDetail.url).toBe(`https://edgegist.test/lite/gists/${created.id}`)
+    expect(liteDetail.files['artifact-54.conf'].content).toBeUndefined()
+    expect(liteDetail.history).toBeUndefined()
+
+    const commits = (await (await app.request(
+      `/lite/gists/${created.id}/commits`,
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new VersionFileReadGuardD1(new ContentReadGuardD1(db)),
+      },
+    )).json()) as Array<Record<string, any>>
+    expect(commits).toHaveLength(2)
+    expect(commits[0]?.url.startsWith(`https://edgegist.test/lite/gists/${created.id}/`)).toBe(true)
+    expect(commits[0]?.user).toBeUndefined()
+
+    const starResponse = await app.request(
+      `/lite/gists/${created.id}/star`,
+      { method: 'PUT', headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )
+    expect(starResponse.status).toBe(204)
+
+    const readStarResponse = await app.request(
+      `/lite/gists/${created.id}/star`,
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )
+    expect(readStarResponse.status).toBe(204)
+
+    const deleteStarResponse = await app.request(
+      `/lite/gists/${created.id}/star`,
+      { method: 'DELETE', headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )
+    expect(deleteStarResponse.status).toBe(204)
+
+    const forks = (await (await app.request(
+      `/lite/gists/${created.id}/forks`,
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as unknown[]
+    expect(forks).toEqual([])
+
+    const fork = (await (await app.request(
+      `/lite/gists/${created.id}/forks`,
+      { method: 'POST', headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as Record<string, any>
+    expect(fork.url).toBe(`https://edgegist.test/lite/gists/${created.id}`)
+    expect(fork.owner).toBeUndefined()
+    expect(fork.forks).toBeUndefined()
+
+    const comments = (await (await app.request(
+      `/lite/gists/${created.id}/comments`,
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as unknown[]
+    expect(comments).toEqual([])
+
+    const comment = (await (await app.request(
+      `/lite/gists/${created.id}/comments`,
+      { method: 'POST', headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as Record<string, any>
+    expect(comment.url).toBe('https://edgegist.test/lite/gists/comments/0')
+    expect(comment.user).toBeUndefined()
+
+    const missingCommentResponse = await app.request(
+      `/lite/gists/${created.id}/comments/0`,
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )
+    expect(missingCommentResponse.status).toBe(404)
+
+    const patchedComment = (await (await app.request(
+      `/lite/gists/${created.id}/comments/0`,
+      { method: 'PATCH', headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )).json()) as Record<string, any>
+    expect(patchedComment.url).toBe('https://edgegist.test/lite/gists/comments/0')
+    expect(patchedComment.user).toBeUndefined()
+
+    const deletedCommentResponse = await app.request(
+      `/lite/gists/${created.id}/comments/0`,
+      { method: 'DELETE', headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new ContentReadGuardD1(db),
+      },
+    )
+    expect(deletedCommentResponse.status).toBe(204)
+
+    const liteVersion = (await (await app.request(
+      `/lite/gists/${created.id}/${commits[0]?.version}`,
+      { headers: ownerHeaders() },
+      {
+        ...env,
+        DB: new VersionChangeReadGuardD1(new ContentReadGuardD1(db)),
+      },
+    )).json()) as Record<string, any>
+    expect(liteVersion.url).toBe(`https://edgegist.test/lite/gists/${created.id}`)
+    expect(liteVersion.html_url).toBe(`https://edgegist.test/owner/${created.id}/${commits[0]?.version}`)
+    expect(liteVersion.files['artifact-54.conf'].raw_url).toBe(
+      `https://edgegist.test/owner/${created.id}/raw/${commits[0]?.version}/artifact-54.conf`,
+    )
+    expect(liteVersion.files['artifact-54.conf'].content).toBeUndefined()
+    expect(liteVersion.owner).toBeUndefined()
+    expect(liteVersion.history).toBeUndefined()
+    expect(liteVersion.forks).toBeUndefined()
+
+    const normalRead = (await (await app.request(
+      `/gists/${created.id}`,
+      { headers: ownerHeaders() },
+      env,
+    )).json()) as Record<string, any>
+    expect(normalRead.owner.login).toBe('owner')
+    expect(normalRead.files['artifact-54.conf'].content).toBe('content-54')
+    expect(normalRead.history).toHaveLength(2)
+  })
+
   test('rejects file rename collisions instead of overwriting existing files', async () => {
     const app = createApp()
     const env = createTestEnv()
@@ -914,14 +1252,34 @@ describe('Gist API contract', () => {
     expect(commits.filter((commit) => commit.files.some((file) => file.filename === 'b.txt'))).toHaveLength(2)
   })
 
-  test('retains no history when max versions is zero', async () => {
+  test('does not record history when max versions is zero', async () => {
     const app = createApp()
+    const db = createMigratedTestD1()
     const env = createTestEnv({
+      DB: db,
       EDGEGIST_HISTORY_MAX_VERSIONS: '0',
     })
-    const gist = await createTestGist(env)
+    const createResponse = await app.request(
+      '/gists',
+      {
+        method: 'POST',
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          files: {
+            'config.json': { content: '{"enabled":true}' },
+          },
+        }),
+      },
+      {
+        ...env,
+        DB: new QueryBudgetD1(db, 3),
+      },
+    )
+    expect(createResponse.status).toBe(201)
+    const gist = (await createResponse.json()) as Record<string, any>
+    expect(gist.history).toEqual([])
 
-    await app.request(
+    const updateResponse = await app.request(
       `/gists/${gist.id}`,
       {
         method: 'PATCH',
@@ -932,8 +1290,13 @@ describe('Gist API contract', () => {
           },
         }),
       },
-      env,
+      {
+        ...env,
+        DB: new QueryBudgetD1(db, 8),
+      },
     )
+    expect(updateResponse.status).toBe(200)
+    expect(((await updateResponse.json()) as Record<string, any>).history).toEqual([])
 
     const commitsResponse = await app.request(`/gists/${gist.id}/commits`, {}, env)
     expect(commitsResponse.status).toBe(200)
@@ -1029,6 +1392,107 @@ describe('Gist API contract', () => {
       d1DatabaseId: 'database-id',
       hasApiToken: true,
       workerScriptName: 'edge-gist',
+    })
+  })
+
+  test('clears retained history without deleting current data or settings', async () => {
+    const app = createApp()
+    const env = createTestEnv()
+    const gist = await createTestGist(env, {
+      description: 'history cleanup',
+      files: { 'config.json': { content: 'one' } },
+    })
+    await app.request(
+      '/owner/_edgegist/api/cloudflare/settings',
+      {
+        method: 'PUT',
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          accountId: 'account-id',
+          apiToken: 'cloudflare-token',
+          d1DatabaseId: 'database-id',
+          d1Plan: 'free',
+          workersPlan: 'free',
+          workerScriptName: 'edge-gist',
+        }),
+      },
+      env,
+    )
+    await app.request(
+      `/gists/${gist.id}`,
+      {
+        method: 'PATCH',
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          files: {
+            'config.json': { content: 'two' },
+          },
+        }),
+      },
+      env,
+    )
+
+    const beforeClear = (await (await app.request(
+      `/gists/${gist.id}`,
+      { headers: ownerHeaders() },
+      env,
+    )).json()) as Record<string, any>
+    expect(beforeClear.files['config.json'].content).toBe('two')
+    expect(beforeClear.history.length).toBeGreaterThan(0)
+
+    const anonymousClearResponse = await app.request(
+      '/owner/_edgegist/api/history',
+      { method: 'DELETE' },
+      env,
+    )
+    expect(anonymousClearResponse.status).toBe(401)
+
+    const wrongOwnerClearResponse = await app.request(
+      '/other/_edgegist/api/history',
+      { method: 'DELETE', headers: ownerHeaders() },
+      env,
+    )
+    expect(wrongOwnerClearResponse.status).toBe(404)
+
+    const clearResponse = await app.request(
+      '/owner/_edgegist/api/history',
+      { method: 'DELETE', headers: ownerHeaders() },
+      env,
+    )
+    expect(clearResponse.status).toBe(200)
+    const clearResult = (await clearResponse.json()) as Record<string, any>
+    expect(clearResult.versionCount).toBe(beforeClear.history.length)
+
+    const afterClear = (await (await app.request(
+      `/gists/${gist.id}`,
+      { headers: ownerHeaders() },
+      env,
+    )).json()) as Record<string, any>
+    expect(afterClear.description).toBe('history cleanup')
+    expect(afterClear.files['config.json'].content).toBe('two')
+    expect(afterClear.history).toEqual([])
+
+    const commitsResponse = await app.request(`/gists/${gist.id}/commits`, { headers: ownerHeaders() }, env)
+    expect(commitsResponse.status).toBe(200)
+    expect(await commitsResponse.json()).toEqual([])
+
+    const exportResponse = await app.request(
+      '/owner/_edgegist/api/export?includeHistory=true',
+      { headers: ownerHeaders() },
+      env,
+    )
+    const exported = (await exportResponse.json()) as Record<string, any>
+    expect(exported.gists[0].versions).toEqual([])
+
+    const settings = (await (await app.request(
+      '/owner/_edgegist/api/cloudflare/settings',
+      { headers: ownerHeaders() },
+      env,
+    )).json()) as Record<string, unknown>
+    expect(settings).toMatchObject({
+      accountId: 'account-id',
+      d1DatabaseId: 'database-id',
+      hasApiToken: true,
     })
   })
 

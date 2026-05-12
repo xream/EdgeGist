@@ -243,6 +243,22 @@ export async function importEdgeGistData(
   return { gistCount: data.gists.length, settingCount: hasSettings ? data.settings?.length ?? 0 : 0, versionCount }
 }
 
+export async function clearEdgeGistHistory(
+  db: D1DatabaseLike,
+): Promise<{ versionCount: number }> {
+  const row = await db
+    .prepare('SELECT COUNT(*) AS count FROM gist_versions')
+    .first<{ count: number }>()
+
+  await db.batch([
+    db.prepare('DELETE FROM gist_version_changes'),
+    db.prepare('DELETE FROM gist_version_files'),
+    db.prepare('DELETE FROM gist_versions'),
+  ])
+
+  return { versionCount: Number(row?.count ?? 0) }
+}
+
 async function exportSettings(db: D1DatabaseLike): Promise<EdgeGistExportSetting[]> {
   const rows = await db
     .prepare('SELECT key, value, updated_at FROM settings ORDER BY key ASC')

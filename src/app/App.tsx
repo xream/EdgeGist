@@ -299,6 +299,11 @@ const englishTranslations = {
   limit: 'Limit',
   usage: 'Usage',
   cancel: 'Cancel',
+  clearHistory: 'Clear history',
+  clearHistoryConfirm: 'This deletes all retained history versions. Current gists, files, stars, and settings stay unchanged. Continue?',
+  clearHistoryDescription: 'Delete retained versions while keeping current gists, files, and saved settings',
+  clearHistoryNotice: 'Cleared {versions} retained history versions.',
+  clearRetainedHistory: 'Clear retained history',
   cloudflare: 'Cloudflare',
   cloudflareApiToken: 'Cloudflare API token',
   cloudflareSettings: 'Cloudflare settings',
@@ -547,6 +552,11 @@ const translations: Record<Locale, Record<TranslationKey, string>> = {
     limit: 'Limit',
     usage: 'Usage',
     cancel: '取消',
+    clearHistory: '清空历史',
+    clearHistoryConfirm: '这会删除所有保留的历史版本。当前 gists、文件、星标和设置不会改变。继续吗？',
+    clearHistoryDescription: '删除保留历史版本，保留当前 gists、文件和已保存设置',
+    clearHistoryNotice: '已清空 {versions} 个保留历史版本。',
+    clearRetainedHistory: '清空保留历史',
     cloudflare: 'Cloudflare',
     cloudflareApiToken: 'Cloudflare API token',
     cloudflareSettings: 'Cloudflare 配置',
@@ -1022,6 +1032,7 @@ export function App() {
   const [importPayload, setImportPayload] = useState<EdgeGistExportPayload | null>(null)
   const [importFileName, setImportFileName] = useState('')
   const [importing, setImporting] = useState(false)
+  const [clearingHistory, setClearingHistory] = useState(false)
   const [dataNotice, setDataNotice] = useState<string | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null)
@@ -1696,6 +1707,37 @@ export function App() {
       setError(err instanceof Error ? err.message : 'Failed to import data')
     } finally {
       setImporting(false)
+    }
+  }
+
+  function requestClearHistory() {
+    setConfirmDialog({
+      title: t('clearRetainedHistory'),
+      description: t('clearHistoryConfirm'),
+      confirmLabel: t('clearHistory'),
+      variant: 'destructive',
+      onConfirm: performClearHistory,
+    })
+  }
+
+  async function performClearHistory() {
+    if (!isAuthenticated) return
+
+    setClearingHistory(true)
+    setDataNotice(null)
+    setError(null)
+    try {
+      const result = await client.clearHistory()
+      setDataNotice(t('clearHistoryNotice', { versions: result.versionCount }))
+      setSelectedVersionSha(null)
+      setSelectedVersion(null)
+      setBaseVersion(null)
+      setMode('content')
+      setDetail((current) => current ? { ...current, history: [] } : current)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to clear history')
+    } finally {
+      setClearingHistory(false)
     }
   }
 
@@ -2505,6 +2547,7 @@ export function App() {
 
           {activeSection === 'data' ? (
             <DataManagementPage
+              clearingHistory={clearingHistory}
               dataNotice={dataNotice}
               exportIncludeHistory={exportIncludeHistory}
               exporting={exporting}
@@ -2512,6 +2555,7 @@ export function App() {
               importIncludeHistory={importIncludeHistory}
               importPayload={importPayload}
               importing={importing}
+              onClearHistory={requestClearHistory}
               onExport={() => void exportData()}
               onExportIncludeHistoryChange={setExportIncludeHistory}
               onImport={requestImportData}
@@ -3843,6 +3887,7 @@ function CloudflarePage({
 }
 
 function DataManagementPage({
+  clearingHistory,
   dataNotice,
   exportIncludeHistory,
   exporting,
@@ -3850,12 +3895,14 @@ function DataManagementPage({
   importIncludeHistory,
   importPayload,
   importing,
+  onClearHistory,
   onExport,
   onExportIncludeHistoryChange,
   onImport,
   onImportFile,
   onImportIncludeHistoryChange,
 }: {
+  clearingHistory: boolean
   dataNotice: string | null
   exportIncludeHistory: boolean
   exporting: boolean
@@ -3863,6 +3910,7 @@ function DataManagementPage({
   importIncludeHistory: boolean
   importPayload: EdgeGistExportPayload | null
   importing: boolean
+  onClearHistory(): void
   onExport(): void
   onExportIncludeHistoryChange(value: boolean): void
   onImport(): void
@@ -3932,6 +3980,27 @@ function DataManagementPage({
           <Button variant="destructive" onClick={onImport} disabled={importing || !importPayload}>
             {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
             {t('importAndReplace')}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="xl:col-span-2">
+        <CardHeader className="border-b">
+          <CardTitle>{t('clearRetainedHistory')}</CardTitle>
+          <CardDescription>{t('clearHistoryDescription')}</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-muted-foreground">
+            {t('clearHistoryConfirm')}
+          </div>
+          <Button
+            className="sm:w-auto"
+            variant="destructive"
+            onClick={onClearHistory}
+            disabled={clearingHistory}
+          >
+            {clearingHistory ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            {t('clearHistory')}
           </Button>
         </CardContent>
       </Card>

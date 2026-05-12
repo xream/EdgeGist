@@ -356,11 +356,16 @@ Limits below were checked against Cloudflare's official docs on 2026-05-11. Clou
 | Batch statements | Individual query limits still apply to each statement inside a batch | Same | A batch does not bypass the 100-parameter, 100 KB SQL, row-size, or query-duration limits. |
 | Per-database concurrency | One D1 database processes queries one at a time and queues excess work | Same | EdgeGist is best suited for personal or low-concurrency single-owner usage. Heavy concurrent edits, imports, exports, or content searches can queue and eventually return D1 overloaded errors. |
 
+> [!NOTE]
+> For Gist-compatible sync tools that do not need full GitHub response metadata, use the `/lite` API prefix to reduce response size and avoid hydrating response history. For example, if a client currently points at `https://api.example.com`, configure it to use `https://api.example.com/lite`. The same Gist paths continue to work under the prefix.
+>
+> If you are close to D1 storage, row-write, or Worker CPU limits and do not need EdgeGist retained revisions, set `EDGEGIST_HISTORY_MAX_VERSIONS` to `0`. With `0`, EdgeGist does not record history versions for new create/update requests.
+
 ### Practical EdgeGist limits
 
 - Keep each file below 2 MB. The app enforces `2,000,000` bytes per file content because D1 caps strings and rows at that size.
 - Keep search terms short. D1 caps `LIKE` patterns at 50 bytes, and EdgeGist wraps the search query in `%...%`.
-- Keep the retained history count intentional. Every retained version stores file snapshots in D1, so storage grows with `file size * retained versions`, plus current files and change metadata.
+- Keep the retained history count intentional. Every retained version stores file snapshots in D1, so storage grows with `file size * retained versions`, plus current files and change metadata. Set `EDGEGIST_HISTORY_MAX_VERSIONS=0` only when you intentionally want new writes to skip EdgeGist history recording.
 - On Workers Free, treat EdgeGist as a personal deployment: 100,000 dynamic Worker requests/day, 10 ms CPU/request, 50 subrequests/request, 500 MB maximum D1 database size, 5 million rows read/day, and 100,000 rows written/day.
 - On Workers Paid, the important ceilings become cost and per-database scale: 10 million Worker requests/month included, 30 million CPU milliseconds/month included, 10 GB maximum D1 database size, 25 billion rows read/month included, and 50 million rows written/month included.
 - On D1 Free, exceeding daily read/write limits stops D1 queries until the daily reset; hitting the storage limit requires deleting data or upgrading before new writes/schema changes can continue. On D1 Paid, usage above included reads, writes, or storage is billed.

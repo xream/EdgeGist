@@ -122,3 +122,7 @@ export type ImportResult = {
   settingCount: number
   versionCount: number
 }
+
+export type ClearHistoryResult = {
+  versionCount: number
+}

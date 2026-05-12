@@ -6,7 +6,7 @@ import {
   readCloudflareSettings,
   saveCloudflareSettings,
 } from './app/cloudflare'
-import { exportEdgeGistData, importEdgeGistData } from './app/data'
+import { clearEdgeGistHistory, exportEdgeGistData, importEdgeGistData } from './app/data'
 import {
   clearOwnerSession,
   configMiddleware,
@@ -153,6 +153,13 @@ export function createApp() {
     return c.json(result)
   })
 
+  app.delete('/:owner/_edgegist/api/history', async (c) => {
+    requireOwnerPath(c)
+    requireOwner(c)
+    return c.json(await clearEdgeGistHistory(c.env.DB))
+  })
+
+  registerGistRoutes(app, { prefix: '/lite', lite: true })
   registerGistRoutes(app)
 
   app.get('/:owner', (c) => {

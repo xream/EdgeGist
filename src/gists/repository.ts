@@ -4,6 +4,7 @@ import type {
   CreateGistInput,
   GistFileRecord,
   GistRecord,
+  GistVersionCommitRecord,
   GistRepository,
   GistVersionRetentionRecord,
   GistVersionFileChange,
@@ -114,7 +115,7 @@ export class D1GistRepository implements GistRepository {
     return gist
   }
 
-  async getGist(id: string): Promise<GistRecord | null> {
+  async getGist(id: string, includeContent = true): Promise<GistRecord | null> {
     const gist = await this.db
       .prepare(
         `SELECT id, owner_login, description, visibility, starred_at, created_at, updated_at
@@ -125,7 +126,7 @@ export class D1GistRepository implements GistRepository {
       .first<GistRow>()
 
     if (!gist) return null
-    return this.hydrateGist(gist)
+    return this.hydrateGist(gist, includeContent)
   }
 
   async listGists(options: ListGistsOptions, includeContent = true): Promise<GistRecord[]> {
@@ -158,8 +159,10 @@ export class D1GistRepository implements GistRepository {
     return Number(row?.count ?? 0)
   }
 
-  async updateGist(id: string, input: UpdateGistInput): Promise<GistRecord | null> {
-    const existing = await this.getGist(id)
+  async updateGist(id: string, input: UpdateGistInput, existingGist?: GistRecord): Promise<GistRecord | null> {
+    if (existingGist && existingGist.id !== id) return null
+
+    const existing = existingGist ?? await this.getGist(id)
     if (!existing) return null
 
     const nextFiles = applyFileUpdates(existing.files, input.files ?? [], input.now)
@@ -194,8 +197,8 @@ export class D1GistRepository implements GistRepository {
     return true
   }
 
-  async setGistStarred(id: string, starredAt: string | null): Promise<GistRecord | null> {
-    const existing = await this.getGist(id)
+  async setGistStarred(id: string, starredAt: string | null, includeContent = true): Promise<GistRecord | null> {
+    const existing = await this.getGist(id, includeContent)
     if (!existing) return null
 
     await this.db
@@ -258,7 +261,8 @@ export class D1GistRepository implements GistRepository {
     return version
   }
 
-  async listVersions(gistId: string): Promise<GistVersionRecord[]> {
+  async listVersions(gistId: string, includeContent = true): Promise<GistVersionRecord[]> {
+    const contentSelection = includeContent ? 'content' : "'' AS content"
     const rows = await this.db
       .prepare(
         `SELECT id, gist_id, sha, version_index, description, committed_at,
@@ -276,7 +280,7 @@ export class D1GistRepository implements GistRepository {
     const [files, changes] = await Promise.all([
       this.db
         .prepare(
-          `SELECT gist_version_files.version_id, filename, content, type, language, size, truncated
+          `SELECT gist_version_files.version_id, filename, ${contentSelection}, type, language, size, truncated
            FROM gist_version_files
            INNER JOIN gist_versions ON gist_versions.id = gist_version_files.version_id
            WHERE gist_versions.gist_id = ?
@@ -297,7 +301,15 @@ export class D1GistRepository implements GistRepository {
     }))
   }
 
+  async listVersionCommits(gistId: string): Promise<GistVersionCommitRecord[]> {
+    return this.listVersionsWithChanges(gistId)
+  }
+
   async listVersionsForRetention(gistId: string): Promise<GistVersionRetentionRecord[]> {
+    return this.listVersionsWithChanges(gistId)
+  }
+
+  private async listVersionsWithChanges(gistId: string): Promise<GistVersionRetentionRecord[]> {
     const rows = await this.db
       .prepare(
         `SELECT id, gist_id, sha, version_index, description, committed_at,
@@ -319,7 +331,12 @@ export class D1GistRepository implements GistRepository {
     }))
   }
 
-  async getVersion(gistId: string, sha: string): Promise<GistVersionRecord | null> {
+  async getVersion(
+    gistId: string,
+    sha: string,
+    includeContent = true,
+    includeChanges = true,
+  ): Promise<GistVersionRecord | null> {
     const row = await this.db
       .prepare(
         `SELECT id, gist_id, sha, version_index, description, committed_at,
@@ -331,7 +348,7 @@ export class D1GistRepository implements GistRepository {
       .first<VersionRow>()
 
     if (!row) return null
-    return this.hydrateVersion(row)
+    return this.hydrateVersion(row, includeContent, includeChanges)
   }
 
   async pruneVersions(gistId: string, keepVersionIds: string[]): Promise<void> {
@@ -471,10 +488,15 @@ export class D1GistRepository implements GistRepository {
     }
   }
 
-  private async hydrateVersion(row: VersionRow): Promise<GistVersionRecord> {
+  private async hydrateVersion(
+    row: VersionRow,
+    includeContent = true,
+    includeChanges = true,
+  ): Promise<GistVersionRecord> {
+    const contentSelection = includeContent ? 'content' : "'' AS content"
     const files = await this.db
       .prepare(
-        `SELECT filename, content, type, language, size, truncated
+        `SELECT filename, ${contentSelection}, type, language, size, truncated
          FROM gist_version_files
          WHERE version_id = ?
          ORDER BY filename ASC`,
@@ -482,15 +504,17 @@ export class D1GistRepository implements GistRepository {
       .bind(row.id)
       .all<VersionFileRow>()
 
-    const changes = await this.db
-      .prepare(
-        `SELECT filename, previous_filename, status, additions, deletions
-         FROM gist_version_changes
-         WHERE version_id = ?
-         ORDER BY filename ASC`,
-      )
-      .bind(row.id)
-      .all<VersionFileChangeRow>()
+    const changes = includeChanges
+      ? await this.db
+        .prepare(
+          `SELECT filename, previous_filename, status, additions, deletions
+           FROM gist_version_changes
+           WHERE version_id = ?
+           ORDER BY filename ASC`,
+        )
+        .bind(row.id)
+        .all<VersionFileChangeRow>()
+      : { results: [] }
 
     return {
       id: row.id,
@@ -551,6 +575,12 @@ function buildGistListFilter(options: ListGistsOptions): { whereSql: string; arg
   const query = options.query?.trim()
   if (query) {
     const pattern = `%${escapeLikePattern(query)}%`
+    const fileSearchConditions = [`gist_files.filename LIKE ? ESCAPE '\\'`]
+    const fileSearchArgs = [pattern]
+    if (options.searchContent !== false) {
+      fileSearchConditions.push(`gist_files.content LIKE ? ESCAPE '\\'`)
+      fileSearchArgs.push(pattern)
+    }
     where.push(`(
       gists.id LIKE ? ESCAPE '\\'
       OR gists.description LIKE ? ESCAPE '\\'
@@ -559,12 +589,11 @@ function buildGistListFilter(options: ListGistsOptions): { whereSql: string; arg
         FROM gist_files
         WHERE gist_files.gist_id = gists.id
           AND (
-            gist_files.filename LIKE ? ESCAPE '\\'
-            OR gist_files.content LIKE ? ESCAPE '\\'
+            ${fileSearchConditions.join('\n            OR ')}
           )
       )
     )`)
-    args.push(pattern, pattern, pattern, pattern)
+    args.push(pattern, pattern, ...fileSearchArgs)
   }
 
   return {

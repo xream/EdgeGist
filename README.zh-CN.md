@@ -354,11 +354,16 @@ Cloudflare analytics 可能有延迟。只要 dashboard 和应用使用的聚合
 | Batch statements | batch 里的每条 statement 仍分别受单 query 限制 | 同左 | Batch 不能绕过 100 parameters、100 KB SQL、row-size 或 query-duration 限制。 |
 | 单 database concurrency | 一个 D1 database 一次只处理一个 query，过量工作会排队 | 同左 | EdgeGist 更适合个人或低并发 single-owner 使用。大量并发编辑、导入、导出或 content search 可能排队，并最终返回 D1 overloaded errors。 |
 
+> [!NOTE]
+> 对于不需要完整 GitHub response metadata 的 Gist-compatible 同步工具，可以使用 `/lite` API 前缀来减少 response size，并避免在响应阶段读取 history。例如原来配置 `https://api.example.com`，现在可以改成 `https://api.example.com/lite`；前缀下仍使用相同的 Gist API paths。
+>
+> 如果已经接近 D1 storage、rows written 或 Worker CPU 限制，并且不需要 EdgeGist retained revisions，可以把 `EDGEGIST_HISTORY_MAX_VERSIONS` 设为 `0`。设置为 `0` 后，新的 create/update 请求不会再记录 history versions。
+
 ### EdgeGist 的实际使用边界
 
 - 单文件保持在 2 MB 以下。应用会按 D1 string/row 限制校验 `2,000,000` bytes 的 file content 上限。
 - 搜索词保持短。D1 限制 `LIKE` pattern 为 50 bytes，而 EdgeGist 会把搜索 query 包在 `%...%` 里。
-- 历史保留数量要有意设置。每个 retained version 都会在 D1 里保存文件快照，所以 storage 会按 `文件大小 * retained versions` 增长，再加当前文件和变更 metadata。
+- 历史保留数量要有意设置。每个 retained version 都会在 D1 里保存文件快照，所以 storage 会按 `文件大小 * retained versions` 增长，再加当前文件和变更 metadata。只有明确希望新写入不再记录 EdgeGist history 时，才把 `EDGEGIST_HISTORY_MAX_VERSIONS=0`。
 - Workers Free 下应把 EdgeGist 当作个人部署：100,000 dynamic Worker requests/day、10 ms CPU/request、50 subrequests/request、500 MB D1 database、5 million rows read/day、100,000 rows written/day。
 - Workers Paid 下更重要的是成本和单 database scale：每月包含 10 million Worker requests、30 million CPU milliseconds、单个 D1 database 最大 10 GB、每月包含 25 billion rows read 和 50 million rows written。
 - D1 Free 超过 daily reads/writes 后，D1 queries 会停止到每日重置；达到 storage limit 后，需要删除数据或升级后才能继续 new writes/schema changes。D1 Paid 超过 included reads、writes 或 storage 后按量计费。

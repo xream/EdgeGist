@@ -2,11 +2,13 @@ import type { EdgeGistConfig } from '../env'
 import type {
   GistFileRecord,
   GistRecord,
+  GistVersionCommitRecord,
   GistVersionRecord,
 } from './types'
 
 type PresenterContext = {
   config: EdgeGistConfig
+  apiPrefix?: string
   includeContent?: boolean
   includeHistory?: boolean
   rawVersionSha?: string
@@ -19,6 +21,7 @@ type VersionPresenterContext = PresenterContext & {
 
 export function presentGist(gist: GistRecord, context: PresenterContext): Record<string, unknown> {
   const base = context.config.baseUrl
+  const apiBase = apiBasePath(base, context.apiPrefix)
   const ownerWebBase = ownerPath(base, context.config.ownerUsername)
   const owner = presentOwner(context.config.ownerUsername, base)
   const files = Object.fromEntries(
@@ -36,9 +39,9 @@ export function presentGist(gist: GistRecord, context: PresenterContext): Record
   )
 
   return {
-    url: `${base}/gists/${gist.id}`,
-    forks_url: `${base}/gists/${gist.id}/forks`,
-    commits_url: `${base}/gists/${gist.id}/commits`,
+    url: `${apiBase}/gists/${gist.id}`,
+    forks_url: `${apiBase}/gists/${gist.id}/forks`,
+    commits_url: `${apiBase}/gists/${gist.id}/commits`,
     id: gist.id,
     node_id: `EG_${gist.id}`,
     git_pull_url: `${ownerWebBase}/${gist.id}.git`,
@@ -56,7 +59,7 @@ export function presentGist(gist: GistRecord, context: PresenterContext): Record
     description: gist.description,
     comments: 0,
     user: null,
-    comments_url: `${base}/gists/${gist.id}/comments`,
+    comments_url: `${apiBase}/gists/${gist.id}/comments`,
     owner,
     forks: [],
     forks_history: [],
@@ -65,6 +68,61 @@ export function presentGist(gist: GistRecord, context: PresenterContext): Record
       : { history: presentHistory(gist.id, context.versions ?? [], context) }),
     truncated: false,
   }
+}
+
+export function presentLiteGist(gist: GistRecord, context: PresenterContext): Record<string, unknown> {
+  const base = context.config.baseUrl
+  const apiBase = apiBasePath(base, context.apiPrefix)
+  const ownerWebBase = ownerPath(base, context.config.ownerUsername)
+  const files = Object.fromEntries(
+    gist.files.map((file) => [
+      file.filename,
+      presentFile(
+        gist.id,
+        file,
+        base,
+        false,
+        context.config.ownerUsername,
+        context.rawVersionSha,
+      ),
+    ]),
+  )
+
+  return {
+    url: `${apiBase}/gists/${gist.id}`,
+    id: gist.id,
+    html_url: context.rawVersionSha
+      ? `${ownerWebBase}/${gist.id}/${context.rawVersionSha}`
+      : `${ownerWebBase}/${gist.id}`,
+    files,
+    public: gist.visibility === 'public',
+    visibility: gist.visibility,
+    created_at: gist.createdAt,
+    updated_at: gist.updatedAt,
+    description: gist.description,
+  }
+}
+
+export function presentLiteVersion(
+  version: GistVersionRecord,
+  context: VersionPresenterContext,
+): Record<string, unknown> {
+  return presentLiteGist(
+    {
+      id: version.gistId,
+      ownerLogin: context.config.ownerUsername,
+      description: version.description,
+      visibility: context.visibility,
+      starredAt: null,
+      createdAt: version.committedAt,
+      updatedAt: version.committedAt,
+      files: version.files,
+    },
+    {
+      ...context,
+      rawVersionSha: version.sha,
+    },
+  )
 }
 
 function presentHistory(
@@ -77,14 +135,31 @@ function presentHistory(
 
 export function presentCommit(
   gistId: string,
-  version: GistVersionRecord,
+  version: GistVersionCommitRecord,
   context: PresenterContext,
 ): Record<string, unknown> {
   const base = context.config.baseUrl
+  const apiBase = apiBasePath(base, context.apiPrefix)
   return {
-    url: `${base}/gists/${gistId}/${version.sha}`,
+    url: `${apiBase}/gists/${gistId}/${version.sha}`,
     version: version.sha,
     user: presentOwner(context.config.ownerUsername, base),
+    change_status: version.changeStatus,
+    files: presentChangedFiles(version),
+    committed_at: version.committedAt,
+  }
+}
+
+export function presentLiteCommit(
+  gistId: string,
+  version: GistVersionCommitRecord,
+  context: PresenterContext,
+): Record<string, unknown> {
+  const base = context.config.baseUrl
+  const apiBase = apiBasePath(base, context.apiPrefix)
+  return {
+    url: `${apiBase}/gists/${gistId}/${version.sha}`,
+    version: version.sha,
     change_status: version.changeStatus,
     files: presentChangedFiles(version),
     committed_at: version.committedAt,
@@ -128,7 +203,7 @@ export function presentOwner(login: string, base: string): Record<string, unknow
   }
 }
 
-function presentChangedFiles(version: GistVersionRecord): Array<Record<string, unknown>> {
+function presentChangedFiles(version: GistVersionCommitRecord): Array<Record<string, unknown>> {
   return version.changes.map((change) => ({
     filename: change.filename,
     ...(change.previousFilename ? { previous_filename: change.previousFilename } : {}),
@@ -166,4 +241,9 @@ export function presentFile(
 
 function ownerPath(base: string, ownerLogin: string): string {
   return `${base}/${encodeURIComponent(ownerLogin)}`
+}
+
+function apiBasePath(base: string, prefix?: string): string {
+  if (!prefix) return base
+  return `${base}${prefix.startsWith('/') ? prefix : `/${prefix}`}`.replace(/\/+$/, '')
 }

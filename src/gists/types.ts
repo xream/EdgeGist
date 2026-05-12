@@ -49,6 +49,7 @@ export type GistVersionRecord = {
 }
 
 export type GistVersionRetentionRecord = Omit<GistVersionRecord, 'files'>
+export type GistVersionCommitRecord = GistVersionRetentionRecord
 
 export type CreateGistInput = {
   ownerLogin: string
@@ -84,6 +85,7 @@ export type ListGistsOptions = {
   starredOnly?: boolean
   since?: string | null
   query?: string | null
+  searchContent?: boolean
   visibility?: Extract<GistVisibility, 'public' | 'secret'> | null
   sort?: 'updated' | 'created' | 'starred'
   direction?: 'asc' | 'desc'
@@ -93,20 +95,26 @@ export type ListGistsOptions = {
 
 export type GistRepository = {
   createGist(input: CreateGistInput): Promise<GistRecord>
-  getGist(id: string): Promise<GistRecord | null>
+  getGist(id: string, includeContent?: boolean): Promise<GistRecord | null>
   listGists(options: ListGistsOptions, includeContent?: boolean): Promise<GistRecord[]>
   countGists(options: ListGistsOptions): Promise<number>
-  updateGist(id: string, input: UpdateGistInput): Promise<GistRecord | null>
+  updateGist(id: string, input: UpdateGistInput, existing?: GistRecord): Promise<GistRecord | null>
   deleteGist(id: string): Promise<boolean>
-  setGistStarred(id: string, starredAt: string | null): Promise<GistRecord | null>
+  setGistStarred(id: string, starredAt: string | null, includeContent?: boolean): Promise<GistRecord | null>
   createVersion(
     gist: GistRecord,
     changeStatus: ChangeStatus,
     changes: GistVersionFileChange[],
   ): Promise<GistVersionRecord>
-  listVersions(gistId: string): Promise<GistVersionRecord[]>
+  listVersions(gistId: string, includeContent?: boolean): Promise<GistVersionRecord[]>
+  listVersionCommits(gistId: string): Promise<GistVersionCommitRecord[]>
   listVersionsForRetention(gistId: string): Promise<GistVersionRetentionRecord[]>
-  getVersion(gistId: string, sha: string): Promise<GistVersionRecord | null>
+  getVersion(
+    gistId: string,
+    sha: string,
+    includeContent?: boolean,
+    includeChanges?: boolean,
+  ): Promise<GistVersionRecord | null>
   pruneVersions(gistId: string, keepVersionIds: string[]): Promise<void>
 }
 

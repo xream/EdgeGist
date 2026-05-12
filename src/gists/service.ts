@@ -36,6 +36,8 @@ export class GistService {
       now,
     })
 
+    if (!shouldRecordHistory(this.config)) return gist
+
     const changes = fileChangesForFiles([], gist.files)
     await this.repository.createVersion(gist, changeStatusForFileChanges(changes), changes)
     await applyRetention(this.repository, gist.id, this.config.retention)
@@ -55,7 +57,7 @@ export class GistService {
       visibility: hasVisibility(payload) ? parseVisibility(payload, existing.visibility) : undefined,
       files: fileUpdates,
       now,
-    })
+    }, existing)
 
     if (!updated) throw notFound()
     if (updated.files.length === 0) {
@@ -63,12 +65,18 @@ export class GistService {
       return null
     }
 
+    if (!shouldRecordHistory(this.config)) return updated
+
     const changes = fileChangesForFiles(existing.files, updated.files, renameHintsForUpdates(fileUpdates))
     await this.repository.createVersion(updated, changeStatusForFileChanges(changes), changes)
     await applyRetention(this.repository, updated.id, this.config.retention)
 
     return updated
   }
+}
+
+function shouldRecordHistory(config: EdgeGistConfig): boolean {
+  return config.retention.count > 0
 }
 
 export function canReadGist(gist: GistRecord, isOwner: boolean): boolean {
